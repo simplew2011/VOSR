@@ -276,9 +276,10 @@ class VOSR(nn.Module):
     # ──────────────────── Sampling ──────────────────── #
 
     @torch.no_grad()
-    def sample_onestep(self, model, lq, venc_fea=None, n_steps: int = 8, schedule: str = "linear"):
+    def sample_onestep(self, model, lq, venc_fea=None, n_steps: int = 8, schedule: str = "linear", z=None):
         B, device = lq.size(0), lq.device
-        z = torch.randn_like(lq)
+        if z is None:
+            z = torch.randn_like(lq)
 
         if schedule == "linear":
             t_seq = torch.linspace(1., 0., n_steps + 1, device=device)

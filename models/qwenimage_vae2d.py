@@ -107,6 +107,13 @@ class Resample2D(nn.Module):
             self.resample = nn.Identity()
 
     def forward(self, x):
+        if self.mode == "upsample2d":
+            # nn.Upsample(..., mode="nearest") on a NON-contiguous input returns
+            # batch-inconsistent results: identical batch items come out slightly
+            # different (measured spread ~1.3 at 1440p, N=8), which makes video
+            # frames flicker. Normalizing strides makes it bit-exact across the
+            # batch (and matches repeat_interleave), with no quality change.
+            x = x.contiguous()
         return self.resample(x)
 
 

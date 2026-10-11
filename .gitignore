@@ -23,3 +23,5 @@ preset/results/
 *.safetensors
 *.tar
 *.zip
+preset/*
+wheels/*

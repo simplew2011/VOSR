@@ -28,6 +28,15 @@ import torch.nn.functional as F
 
 AE_FACTOR = 8  # Qwen/SD2 VAE spatial compression ratio
 
+_LOGGED_ONCE = set()
+
+
+def _log_once(msg):
+    """Print a tiling line at most once per unique message (per process)."""
+    if msg not in _LOGGED_ONCE:
+        _LOGGED_ONCE.add(msg)
+        print(msg)
+
 
 def _gaussian_weights(tile_h, tile_w, channels, device):
     """2-D Gaussian blend mask (1, C, tile_h, tile_w) peaked at the centre."""
@@ -81,16 +90,19 @@ def encode_latent(vae, x, args, device, posterior_mode=True):
         posterior = vae.encode(x).latent_dist
         z = posterior.mode() if posterior_mode else posterior.sample()
         return z * vae.config.scaling_factor, None, None
+    raise ValueError(f"unsupported ae_type: {args.ae_type!r}")
 
 
 def decode_latent(vae, sr_latent, args, latents_mean, latents_std, light_decoder=None):
     """Single-shot VAE decode -> pixels in [-1, 1]. Mirrors the old _decode_latent."""
     if args.ae_type == 'sd2':
+        assert light_decoder is not None, "sd2 decode requires a light_decoder"
         sr_u = sr_latent / vae.config.scaling_factor
         return light_decoder(sr_u).clamp(-1, 1)
     elif args.ae_type == 'qwen':
         sr_latent = sr_latent / latents_std + latents_mean
         return vae.decode(sr_latent, return_dict=False)[0].clamp(-1, 1)
+    raise ValueError(f"unsupported ae_type: {args.ae_type!r}")
 
 
 def _tile_params(tile_size, tile_overlap, lh, lw):
@@ -120,9 +132,8 @@ def tiled_encode_latent(vae, x, args, device, tile_size, tile_overlap, posterior
 
     h_pos = _make_tile_grid(lh, lt_size, lt_overlap)
     w_pos = _make_tile_grid(lw, lt_size, lt_overlap)
-    print(f"[Tiled VAE encode]: pixel {orig_h}x{orig_w} -> latent {lh}x{lw}, "
-          f"tile={lt_size}, overlap={lt_overlap}, grid={len(h_pos)}x{len(w_pos)}")
-
+    # _log_once(f"[Tiled VAE encode]: pixel {orig_h}x{orig_w} -> latent {lh}x{lw}, "
+    #           f"tile={lt_size}, overlap={lt_overlap}, grid={len(h_pos)}x{len(w_pos)}")
     b = pad.shape[0]
     acc = wacc = g = None
     mean = std = None
@@ -136,9 +147,11 @@ def tiled_encode_latent(vae, x, args, device, tile_size, tile_overlap, posterior
                 g = _gaussian_weights(lt_size, lt_size, lc, device)
                 acc = torch.zeros(b, lc, lh, lw, device=device, dtype=z_tile.dtype)
                 wacc = torch.zeros_like(acc)
+            assert acc is not None and wacc is not None and g is not None
             acc[:, :, hi:hi + lt_size, wi:wi + lt_size] += z_tile * g
             wacc[:, :, hi:hi + lt_size, wi:wi + lt_size] += g
 
+    assert acc is not None and wacc is not None
     blended = acc / wacc
     # Crop back to the untiled latent size (ceil(orig/8)); padded right/bottom dropped.
     out_lh, out_lw = math.ceil(orig_h / 8), math.ceil(orig_w / 8)
@@ -163,8 +176,7 @@ def tiled_decode_latent(vae, sr_latent, args, latents_mean, latents_std,
 
     h_pos = _make_tile_grid(lh, lt_size, lt_overlap)
     w_pos = _make_tile_grid(lw, lt_size, lt_overlap)
-    print(f"[Tiled VAE decode]: latent {lh}x{lw}, tile={lt_size}, overlap={lt_overlap}, "
-          f"grid={len(h_pos)}x{len(w_pos)}")
+    # _log_once(f"[Tiled VAE decode]: latent {lh}x{lw}, tile={lt_size}, overlap={lt_overlap}, "f"grid={len(h_pos)}x{len(w_pos)}")
 
     out_h, out_w = lh * 8, lw * 8
     g = _gaussian_weights(lt_size * 8, lt_size * 8, 3, sr_latent.device)
