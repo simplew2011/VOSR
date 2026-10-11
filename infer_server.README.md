@@ -556,67 +556,7 @@ def forward(self, x):
 {"source":"/path/in.mp4","scale":2,"tile_size":512,"batch_size":8,"vae_tile_size":1024}
 ```
 
-## 显存回收
 
-- **任务处理中显存会涨到该任务的峰值**（随分辨率 × `batch_size` × 是否分块），处理完**会自动回落到基础占用**。
-- **失败/取消的任务也会回收**：任务结束（无论成功、失败、取消）后服务会 `gc.collect()` + `torch.cuda.empty_cache()`，
-  并把异常栈帧里的张量引用清掉，把峰值显存还给驱动。日志会打印一行
-  `reclaimed <N>MB GPU cache (reserved A -> B)`。
-- 因此**单卡 OOM 失败不会再残留显存**：失败后 `nvidia-smi` 会回到基础占用，后续多卡任务的 GPU0 分片不会被挤爆。
-  （若发现显存仍不回落，多半是运行的是旧进程，重启服务即可。）
-
-## 常见问题
-
-### 提交后"服务没反应"
-
-**提交本身是秒级返回的**（POST `/v1/upscales` 立刻返回 `202` 与任务对象），
-真正的推理在后台队列里跑，**不会阻塞 HTTP 请求**。所谓"没反应"通常是：
-
-1. **长任务：** 822 帧 720p→1440p 约 **15 分钟**（3x/4x 更久）。任务在跑，只是耗时。
-   服务端终端现在会**每 ~15s 打印一次进度**（见下方"日志"），也可用 `GET .../{id}` 轮询。
-2. **`curl -f` 吞掉了错误响应：** 用 `curl -sS` 而非 `-fsS`。带 `-f` 时 4xx/5xx 会返回空，
-   `python -c ...["id"]` 报 `Expecting value: line 1 column 1`。
-3. **`$BASE`/`$AUTH` 未设置：** `AUTH` 在**未设 `VOSR_API_KEY`** 时不要传（否则 401）；
-   `BASE` 默认 `http://127.0.0.1:18303`，跨机访问要换成服务所在 IP 且确认防火墙放行。
-4. **模型还在加载：** 启动后需等 `runtime[0] ready ... / Application startup complete`；
-   在此之前 `/health` 的 `resident` 为 `false`。先 `curl -sS $BASE/health` 确认 `resident:true`。
-
-排查步骤：`curl -sS $BASE/health` 看 `resident/active/queued` → 提交时 `echo "$JOB"`
-确认拿到 `id` → 轮询看 `status/phase/progress` 是否在推进。
-
-### 下载报 `curl: (23) Failure writing output to destination`
-
-**不是服务问题，是 `-o` 指向的目录不可写。** `curl -o` 会在本地创建文件，
-若输出路径所在的目录对当前用户没有写权限（例如把结果写进只读的代码仓库目录），
-curl 就报 23。把结果下到可写目录即可：
-
-```bash
-curl -sSL "$BASE/v1/upscales/$UPSCALE_ID/content" -o /tmp/output_upscaled.mp4
-# 或 ~/output_upscaled.mp4
-```
-
-下载前先用 `GET .../{id}` 确认 `status == "completed"`（未完成时 `/content` 返回 `409`）。
-
-### `mat1 and mat2 must have the same dtype`
-
-已在 `models/lightningdit.py` 的 `TimestepEmbedder.forward` 里修复（内部 fp32 与 bf16
-权重对齐），无需额外处理；详见 `inference_vosr_onestep.py` 中 `run_dtype` 处的注释。
-
-## 日志
-
-任务运行时用 **tqdm 进度条就地刷新**（不再重复刷屏），任务结束打印一行汇总：
-
-```
-2026-10-06 18:40:17 | INFO    | vosr | job upscale_..._4420aa_2x started: kind=video scale=2.0 target=2560x1440
-2026-10-06 18:40:17 | INFO    | vosr | job input=bg_video.mp4 src=1280x720 frames=822 fps=30.000 target=2560x1440 tile=512 vae_tile=None batch=8
-video 2x 4420aa_2x: |██████▏   | 62%, elapsed 21s        ← 就地刷新（同一行）
-2026-10-06 18:40:49 | INFO    | vosr | job upscale_..._4420aa_2x completed: output=... size=3188281B elapsed=32.3s encoder=auto
-```
-
-- 进度条只在**交互式终端**显示为动态单行；重定向到文件时按行追加（`\r`）。
-- 期间的其他日志（`queued/started/completed`、`core` 的 `[Tiled Latent]` 等）会**自动避开进度条**（通过 `tqdm.write`），不会被冲掉。
-- `tqdm` 不可用时自动降级为每 ~15s/≥5% 打印一行进度。
-- 级别由 `VOSR_LOG_LEVEL` 控制。
 
 ## Appendix：FlashVSR 与 VOSR2 模型对比
 
