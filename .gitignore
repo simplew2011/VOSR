@@ -25,3 +25,4 @@ preset/results/
 *.zip
 preset/*
 wheels/*
+profiling/*

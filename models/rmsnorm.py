@@ -5,14 +5,8 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-import fairscale.nn.model_parallel.initialize as fs_init
 import torch
 import torch.nn.functional as F
-from fairscale.nn.model_parallel.layers import (
-    ColumnParallelLinear,
-    ParallelEmbedding,
-    RowParallelLinear,
-)
 from torch import nn
 
 
@@ -196,6 +190,9 @@ class Attention(nn.Module):
             cache_v (torch.Tensor): Cached values for attention.
 
         """
+        import fairscale.nn.model_parallel.initialize as fs_init
+        from fairscale.nn.model_parallel.layers import ColumnParallelLinear, RowParallelLinear
+
         super().__init__()
         self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
         model_parallel_size = fs_init.get_model_parallel_world_size()
@@ -327,6 +324,8 @@ class FeedForward(nn.Module):
             w3 (ColumnParallelLinear): Linear transformation for the third layer.
 
         """
+        from fairscale.nn.model_parallel.layers import ColumnParallelLinear, RowParallelLinear
+
         super().__init__()
         hidden_dim = int(2 * hidden_dim / 3)
         # custom dim factor multiplier
@@ -429,6 +428,8 @@ class Transformer(nn.Module):
             freqs_cis (torch.Tensor): Precomputed cosine and sine frequencies.
 
         """
+        from fairscale.nn.model_parallel.layers import ColumnParallelLinear, ParallelEmbedding
+
         super().__init__()
         self.params = params
         self.vocab_size = params.vocab_size
